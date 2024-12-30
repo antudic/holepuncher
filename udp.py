@@ -9,7 +9,7 @@ def main():
 
     while True:
         _data, addr = sock.recvfrom(2048)
-        print(_data, addr)
+        # print(_data, addr)
         sock.sendto(b".", addr)
 
 """
