@@ -9,7 +9,7 @@ import udp # local library
 # this keeps track of the keyInfo's
 signalingDict = {}
 
-# this keeps track of which IPs that have keyInfo's so one user doesn't make a million of them and break the host machine
+# this keeps track of which IPs have keyInfo's to limit one IP to one key
 connections = set()
 
 app = Robyn(__file__)
