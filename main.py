@@ -52,6 +52,10 @@ async def query_get(req_obj: Request):
     
     # if the key, does not exist, we create it
     else:
+        # first make sure that IP does not already active key
+        if req_obj.ip_addr in connections:
+            return "Key already exists"
+            
         connections.add(req_obj.ip_addr)
         await timeoutKey(key) # this function is non-blocking
         endpointDict[key] = (req_obj.ip_addr, port)
