@@ -3,122 +3,92 @@
 # dev: python -m robyn main.py --dev
 
 from robyn import Robyn, Request, jsonify
-import time, asyncio, threading
+import asyncio, threading
 import udp # local library
 
-# this keeps track of the keyInfo's
-signalingDict = {}
 
-# this keeps track of which IPs have keyInfo's to limit one IP to one key
+# mapping between key->endpoint
+endpointDict = {}
+
+# keep track of IPs to limit endpointDict entries
 connections = set()
 
 app = Robyn(__file__)
 
 
-class keyInfoEnum:
-    CREATED_AT = 0
-    CLIENT_ONE = 1
-    CLIENT_TWO = 2
+@app.get("/keyInfo")
+async def query_get(req_obj: Request):
+    global endpointDict
 
-    IP = 0
-    PORT = 1
+    if len(endpointDict) > 100_000:
+        return "Server overload!"
+    
+    # check that key exists
+    key = req_obj.query_params.get("key")
+    if not key: return "No key supplied"
+    if len(key) > 100: return "Key value too long"
+
+    # make sure port is "valid"
+    port = req_obj.query_params.get("port")
+    if not port: return "No port supplied"
+    if len(port) > 5: return "Port value too long"
+    try: port = int(port)
+    except (TypeError, ValueError): return "Invalid port"
+    
+    # if the key exists already
+    if (endpoint := endpointDict.get(key)):
+
+        if endpoint[0] == req_obj.ip_addr:
+            return "No peer connected"
+        
+        else:
+            connections.remove(endpoint[0])
+            connections.add(req_obj.ip_addr)
+            # ^ we make sure to add the new IP here, otherwise a malicious
+            # actor could create infinite keys as long as they have 2 IPs
+
+            endpointDict[key] = (req_obj.ip_addr, port)
+            return jsonify(endpoint)
+    
+    # if the key, does not exist, we create it
+    else:
+        connections.add(req_obj.ip_addr)
+        await timeoutKey(key) # this function is non-blocking
+        endpointDict[key] = (req_obj.ip_addr, port)
+        return "Key created"
 
 
 @app.get("/delete")
 async def query_get(req_obj: Request):
     # check that key exists
     key = req_obj.query_params.get("key")
+    if not key: return "OK"
+    if len(key) > 100: return "OK"
 
-    # delete connection (so machine can once again make a new key)
-    try: connections.remove(signalingDict[key][keyInfoEnum.CLIENT_ONE][keyInfoEnum.IP])
+    try: connections.remove(endpointDict[key][0])
     except KeyError: pass
 
-    # delete the keyInfo
-    try: del signalingDict[key]
+    try: del endpointDict[key]
     except KeyError: pass
 
-    return "OK."
+    return "OK"
 
 
-@app.get("/keyInfo")
-async def query_get(req_obj: Request):
-
-    if len(connections) > 100_000:
-        return "Server overload!"
-
-    # check that key exists
-    key = req_obj.query_params.get("key")
-    if not key: return "No key supplied."
-    if len(key) > 100: return "Key value too long"
-
-    # get the client IP
-    clientIP = req_obj.ip_addr
-
-    # if the key exists already
-    if (keyInfo := signalingDict.get(key)):
-
-        # if we have keyInfo for client two, send back key info
-        if keyInfo[keyInfoEnum.CLIENT_TWO]:
-            return jsonify(keyInfo[1:])
-        
-        # if we don't have keyInfo for client two and client one sends the request
-        elif clientIP == keyInfo[keyInfoEnum.CLIENT_ONE][keyInfoEnum.IP]:
-            return "No peer connected."
-        
-        # at this point we know client two sent the request and that we need to write it down
-        else:
-            # make sure port is "valid"
-            port = req_obj.query_params.get("port")
-            if not port: return "No port supplied."
-            if len(port) > 5: return "Port value too long"
-
-            # update keyInfo data for client two
-            keyInfo[keyInfoEnum.CLIENT_TWO] = (clientIP, port)
-
-            return jsonify(keyInfo[1:])
-
-    else:
-        # first check if IP already has room active
-        if clientIP in connections: return "You already have an active room!"
-
-        # make sure port is "valid"
-        port = req_obj.query_params.get("port")
-        if not port: return "No port supplied."
-        if len(port) > 5: return "Port value too long"
-
-        createdAt = int(time.time())
-
-        signalingDict[key] = [
-            createdAt,        # CREATED_AT
-            (clientIP, port), # CLIENT_ONE
-            None              # CLIENT_TWO
-            ]
-        
-        await keyInfoTimeout(createdAt, key) # non-blocking
-
-        return "Key created."
-
-
-async def keyInfoTimeout(key, createdAt):
+async def timeoutKey(key):
     
-    async def realFunc(key, createdAt):
-        await asyncio.sleep(200) # sleep for 200 seconds
+    async def realFunc(key):
+        global endpointDict
 
-        # since we are now in the future, get the potentially new keyInfo 
-        try: keyInfo = signalingDict[key]
-        except KeyError: return # if they key no longer exists, all work is done
+        await asyncio.sleep(120)
 
-        if keyInfo[keyInfoEnum.CREATED_AT] == createdAt:
-            # this ensures that it's not a new room with the same key
-            
-            try: connections.remove(keyInfo[keyInfoEnum.CLIENT_ONE][keyInfoEnum.IP])
-            except KeyError: pass
-
-            try: del signalingDict[key]
-            except KeyError: pass
+        # make sure that the key is still first in the dictionary to make 
+        # sure the key hasn't already been manually deleted and re-used
+        if key == next(iter(endpointDict)):
+            connections.remove(endpointDict[key][0])
+            del endpointDict[key]
 
     loop = asyncio.get_event_loop()
-    loop.create_task(realFunc(key, createdAt))
+    loop.create_task(realFunc(key))
 
 
 threading.Thread(target=udp.main, daemon=True).start()
